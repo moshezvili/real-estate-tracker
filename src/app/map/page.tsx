@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Checkbox } from "@/components/ui/checkbox"
 import { Label } from "@/components/ui/label"
 import dynamic from 'next/dynamic'
-import { UploadIcon } from 'lucide-react'
+import { UploadIcon, DownloadIcon } from 'lucide-react'
 import { parse } from 'papaparse'
 
 const Map = dynamic(() => import('./map'), { ssr: false })
@@ -25,7 +25,6 @@ interface AlertData {
 
 export default function MissileAlertApp() {
   const [alertData, setAlertData] = useState<AlertData[]>([])
-  const [filteredAlertData, setFilteredAlertData] = useState<AlertData[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [selectedCategory, setSelectedCategory] = useState<string>('all')
@@ -34,8 +33,22 @@ export default function MissileAlertApp() {
   const [showMarkers, setShowMarkers] = useState(false)
   const [showHeatmap, setShowHeatmap] = useState(true)
   const today = new Date();
-  const [fromDate, setFromDate] = useState(today.toLocaleDateString('en-GB').split('/').reverse().join('.'));
-  const [toDate, setToDate] = useState(today.toLocaleDateString('en-GB').split('/').reverse().join('.'));
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+  const [fromDate, setFromDate] = useState(yesterday.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }).split('/').join('.'));
+  const [toDate, setToDate] = useState(today.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }).split('/').join('.'));
+  const [rawData, setRawData] = useState<any[]>([])
+  const [coordDataLoaded, setCoordDataLoaded] = useState(false);
+
+  useEffect(() => {
+    loadCoordData();
+  }, []);
+
+  useEffect(() => {
+    if (coordDataLoaded) {
+      fetchAlertData();
+    }
+  }, [coordDataLoaded]);
 
   const fetchAlertData = useCallback(async () => {
     setLoading(true);
@@ -46,6 +59,7 @@ export default function MissileAlertApp() {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
       const json = await response.json();
+      setRawData(json);
       const processedData = processAlertData(json);
       setAlertData(processedData);
     } catch (err) {
@@ -54,11 +68,7 @@ export default function MissileAlertApp() {
     } finally {
       setLoading(false);
     }
-  }, [fromDate, toDate]);
-
-  useEffect(() => {
-    loadCoordData();
-  }, []);
+  }, [fromDate, toDate, coordData]);
 
   const filteredData = useMemo(() => {
     return selectedCategory === 'all'
@@ -102,30 +112,52 @@ export default function MissileAlertApp() {
         coordMap[row.loc] = [parseFloat(row.lat), parseFloat(row.long)]
       })
       setCoordData(coordMap)
+      setCoordDataLoaded(true)
     } catch (error) {
       console.error('Error loading coord.csv:', error)
       setError('Failed to load coordinate data.')
     }
   }
 
-  const processAlertData = (data: any[]): AlertData[] => {
-    return data.map(alert => {
+  const processAlertData = useCallback((data: any[]): AlertData[] => {
+    return data.flatMap(alert => {
       try {
-        const [lat, lon] = coordData[alert.data] || [null, null];
-        return {
-          date: new Date(alert.alertDate),
-          title: alert.title,
-          location: alert.data,
-          category: getCategoryName(alert.category),
-          lat: lat,
-          lon: lon
+        const processLocation = (location: string): AlertData | null => {
+          const [lat, lon] = coordData[location] || [null, null];
+          if (lat === null || lon === null) {
+            return null;
+          }
+          return {
+            date: new Date(alert.alertDate),
+            title: alert.title,
+            location: location,
+            category: getCategoryName(alert.category),
+            lat: lat,
+            lon: lon
+          };
         };
+
+        // First, try processing the entire location string
+        const fullLocationResult = processLocation(alert.data.trim());
+        if (fullLocationResult) {
+          return [fullLocationResult];
+        }
+
+        // If that fails, split the string and try individual locations
+        const locations = alert.data.split(',').map((loc: string) => loc.trim());
+        const results = locations.map(processLocation).filter(Boolean);
+
+        if (results.length === 0) {
+          console.warn(`No coordinates found for any location in: ${alert.data}`);
+        }
+
+        return results;
       } catch (error) {
         console.error(`Error processing alert: ${error}`);
         return null;
       }
     }).filter(alert => alert !== null) as AlertData[];
-  }
+  }, [coordData]);
 
   const getCategoryName = (category: number): string => {
     switch (category) {
@@ -138,24 +170,61 @@ export default function MissileAlertApp() {
     }
   }
 
-  const renderList = useCallback(() => {
-    return filteredData.slice(0, 100).map((alert, index) => (
-      <Card key={index} className="mb-4">
+  const renderStats = useMemo(() => {
+    if (filteredData.length === 0) {
+      return <p>No data available</p>;
+    }
+
+    const totalAlerts = filteredData.length;
+    const categoryCounts = filteredData.reduce((acc, alert) => {
+      acc[alert.category] = (acc[alert.category] || 0) + 1;
+      return acc;
+    }, {} as Record<string, number>);
+
+    const locationCounts = filteredData.reduce((acc, alert) => {
+      acc[alert.location] = (acc[alert.location] || 0) + 1;
+      return acc;
+    }, {} as Record<string, number>);
+
+    const topLocations = Object.entries(locationCounts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5);
+
+    const dateRange = {
+      start: new Date(Math.min(...filteredData.map(a => a.date.getTime()))),
+      end: new Date(Math.max(...filteredData.map(a => a.date.getTime())))
+    };
+
+    return (
+      <Card className="mb-4">
         <CardHeader>
-          <CardTitle>{alert.title}</CardTitle>
-          <CardDescription>{alert.date.toLocaleString('he-IL', { timeZone: 'Asia/Jerusalem' })}</CardDescription>
+          <CardTitle>Alert Statistics</CardTitle>
         </CardHeader>
         <CardContent>
-          <p><strong>Location:</strong> {alert.location}</p>
-          <p><strong>Category:</strong> {alert.category}</p>
-          <p><strong>Latitude:</strong> {alert.lat}</p>
-          <p><strong>Longitude:</strong> {alert.lon}</p>
+          <p><strong>Total Alerts:</strong> {totalAlerts}</p>
+          <p><strong>Date Range:</strong> {dateRange.start.toLocaleDateString()} - {dateRange.end.toLocaleDateString()}</p>
+          <div className="mt-4">
+            <strong>Alerts by Category:</strong>
+            <ul>
+              {Object.entries(categoryCounts).map(([category, count]) => (
+                <li key={category}>{category}: {count}</li>
+              ))}
+            </ul>
+          </div>
+          <div className="mt-4">
+            <strong>Top 5 Locations:</strong>
+            <ul>
+              {topLocations.map(([location, count]) => (
+                <li key={location}>{location}: {count}</li>
+              ))}
+            </ul>
+          </div>
         </CardContent>
       </Card>
-    ));
+    );
   }, [filteredData]);
 
-  const renderContent = useCallback(() => {
+  const renderContent = () => {
     if (loading) {
       return <div className="text-center p-4">Loading...</div>
     }
@@ -172,10 +241,10 @@ export default function MissileAlertApp() {
     }
     return (
       <div className="flex space-x-4">
-        <div className="w-1/2 overflow-y-auto" style={{ maxHeight: 'calc(100vh - 200px)' }}>
-          {renderList()}
+        <div className="w-1/4">
+          {renderStats}
         </div>
-        <div className="w-1/2">
+        <div className="w-3/4">
           <Map 
             alertData={filteredData} 
             showMarkers={showMarkers} 
@@ -184,7 +253,7 @@ export default function MissileAlertApp() {
         </div>
       </div>
     )
-  }, [loading, error, filteredData, showMarkers, showHeatmap]);
+  };
 
   const handleFromDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setFromDate(formatDate(e.target.value));
@@ -196,8 +265,19 @@ export default function MissileAlertApp() {
 
   const formatDate = (date: string) => {
     const [year, month, day] = date.split('-');
-    return `${day}.${month}.${year}`;
+    return `${day.padStart(2, '0')}.${month.padStart(2, '0')}.${year}`;
   };
+
+  const handleDownloadJSON = () => {
+    const dataStr = JSON.stringify(rawData, null, 2);
+    const dataUri = 'data:application/json;charset=utf-8,'+ encodeURIComponent(dataStr);
+    const exportFileDefaultName = 'raw_alert_data.json';
+
+    const linkElement = document.createElement('a');
+    linkElement.setAttribute('href', dataUri);
+    linkElement.setAttribute('download', exportFileDefaultName);
+    linkElement.click();
+  }
 
   return (
     <div className="container mx-auto p-4">
@@ -214,7 +294,7 @@ export default function MissileAlertApp() {
                 type="date"
                 id="fromDate"
                 onChange={handleFromDateChange}
-                defaultValue={new Date().toISOString().split('T')[0]}
+                defaultValue={new Date(Date.now() - 86400000).toISOString().split('T')[0]}
               />
             </div>
             <div className="flex flex-col space-y-2">
@@ -260,11 +340,14 @@ export default function MissileAlertApp() {
             <Button onClick={fetchAlertData} variant="outline">
               Fetch Data
             </Button>
-            <Button onClick={() => setAlertData([])} variant="outline">
+            <Button onClick={() => {setAlertData([]); setRawData([]);}} variant="outline">
               Clear Data
             </Button>
-            </div>
-            <div className="flex items-center space-x-4 mb-4">
+            <Button onClick={handleDownloadJSON} variant="outline" disabled={rawData.length === 0}>
+              <DownloadIcon className="mr-2 h-4 w-4" /> Download JSON
+            </Button>
+          </div>
+          <div className="flex items-center space-x-4 mb-4">
             <div className="flex items-center space-x-2">
               <Checkbox 
                 id="show-markers" 

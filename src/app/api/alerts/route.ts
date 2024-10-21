@@ -5,13 +5,26 @@ export async function GET(request: Request) {
   const fromDate = searchParams.get('fromDate');
   const toDate = searchParams.get('toDate');
 
+  console.log(`Received request with fromDate: ${fromDate}, toDate: ${toDate}`);
+
   if (!fromDate || !toDate) {
+    console.log('Missing fromDate or toDate');
     return NextResponse.json({ error: 'fromDate and toDate are required' }, { status: 400 });
+  }
+
+  function parseDate(dateString: string): Date {
+    const [day, month, year] = dateString.split('.');
+    return new Date(parseInt(year), parseInt(month)-1, parseInt(day));
+  }
+
+  function formatDate(date: Date): string {
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
   }
 
   // Function to fetch data for a specific date range
   async function fetchDataForRange(start: string, end: string) {
     const url = `https://alerts-history.oref.org.il//Shared/Ajax/GetAlarmsHistory.aspx?lang=he&fromDate=${start}&toDate=${end}&mode=0`;
+    console.log(`Fetching data for range: ${start} to ${end}`);
 
     const response = await fetch(url, {
       headers: {
@@ -33,48 +46,47 @@ export async function GET(request: Request) {
       throw new Error(`HTTP error! status: ${response.status}`);
     }
 
-    return await response.json();
+    const data = await response.json();
+    console.log(`Fetched ${data.length} alerts for range ${start} to ${end}`);
+    return data;
   }
 
   try {
+    const fromDateObj = parseDate(fromDate);
+    const toDateObj = parseDate(toDate);
 
-    // Convert dates to Date objects for easier comparison
-    const fromDateObj = new Date(fromDate);
-    const toDateObj = new Date(toDate);
+    console.log(`Parsed dates: from ${formatDate(fromDateObj)} to ${formatDate(toDateObj)}`);
 
-    // Calculate the difference in days
     const diffTime = Math.abs(toDateObj.getTime() - fromDateObj.getTime());
     const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 
-    // If the date range is more than 30 days, split it into chunks
-    if (diffDays > 30) {
-      let currentDate = new Date(fromDateObj);
-      const endDate = new Date(toDateObj);
-      let allData: any[] = [];
+    console.log(`Date range: ${diffDays} days`);
 
-      while (currentDate <= endDate) {
-        let chunkEndDate = new Date(currentDate);
-        chunkEndDate.setDate(chunkEndDate.getDate() + 29);
+    let allData: any[] = [];
+    let currentDate = new Date(fromDateObj);
+    const endDate = new Date(toDateObj);
 
-        if (chunkEndDate > endDate) {
-          chunkEndDate = endDate;
-        }
+    while (currentDate <= endDate) {
+      let chunkEndDate = new Date(currentDate);
+      chunkEndDate.setDate(chunkEndDate.getDate() + 29);
 
-        const chunkStart = currentDate.toISOString().split('T')[0];
-        const chunkEnd = chunkEndDate.toISOString().split('T')[0];
-
-        const chunkData = await fetchDataForRange(chunkStart, chunkEnd);
-        allData = allData.concat(chunkData);
-
-        currentDate.setDate(currentDate.getDate() + 30);
+      if (chunkEndDate > endDate) {
+        chunkEndDate = endDate;
       }
 
-      return NextResponse.json(allData);
+      const chunkStart = formatDate(currentDate);
+      const chunkEnd = formatDate(chunkEndDate);
+
+      console.log(`Processing chunk: ${chunkStart} to ${chunkEnd}`);
+      const chunkData = await fetchDataForRange(chunkStart, chunkEnd);
+      allData = allData.concat(chunkData);
+      console.log(`Total alerts collected: ${allData.length}`);
+
+      currentDate.setDate(currentDate.getDate() + 30);
     }
 
-    // If 30 days or less, fetch data normally
-    const data = await fetchDataForRange(fromDate, toDate);
-    return NextResponse.json(data);
+    console.log(`Returning ${allData.length} total alerts`);
+    return NextResponse.json(allData);
   } catch (error) {
     console.error('Error fetching alerts:', error);
     return NextResponse.json({ error: 'Failed to fetch alerts' }, { status: 500 });

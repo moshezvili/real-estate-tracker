@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import 'leaflet.heat'
@@ -46,6 +46,7 @@ export default function Map({ alertData, showMarkers, showHeatmap }: MapProps) {
   const mapRef = useRef<L.Map | null>(null)
   const heatmapLayerRef = useRef<L.HeatLayer | null>(null)
   const markersLayerRef = useRef<L.LayerGroup | null>(null)
+  const [selectedLocation, setSelectedLocation] = useState<string | null>(null)
 
   useEffect(() => {
     if (!mapRef.current) {
@@ -65,6 +66,15 @@ export default function Map({ alertData, showMarkers, showHeatmap }: MapProps) {
       markersLayerRef.current = null;
     }
 
+    // Ensure the map is properly initialized before adding layers
+    if (mapRef.current && alertData.length > 0) {
+      updateLayers();
+    }
+  }, [alertData, showMarkers, showHeatmap])
+
+  const updateLayers = () => {
+    if (!mapRef.current) return;
+
     // Heatmap logic
     if (showHeatmap) {
       const heatmapData = alertData.reduce((acc, alert) => {
@@ -80,7 +90,26 @@ export default function Map({ alertData, showMarkers, showHeatmap }: MapProps) {
         return [lat, lon, count] as L.HeatLatLngTuple;
       });
 
-      heatmapLayerRef.current = L.heatLayer(heatData, { radius: 25 }).addTo(mapRef.current);
+      heatmapLayerRef.current = L.heatLayer(heatData, { 
+        radius: 25,
+        minOpacity: 0.4,
+        // gradient: {0.4: 'blue', 0.65: 'lime', 1: 'red'}
+      }).addTo(mapRef.current);
+
+      // Make heatmap clickable
+      mapRef.current.on('click', (e) => {
+        const latlng = e.latlng;
+        const nearestPoint = findNearestPoint(latlng, heatData);
+        if (nearestPoint) {
+          const [lat, lon, count] = nearestPoint;
+          const location = alertData.find(alert => alert.lat === lat && alert.lon === lon)?.location;
+          if (location) {
+            setSelectedLocation(`${location}: ${count} התראות`);
+          }
+        } else {
+          setSelectedLocation(null);
+        }
+      });
     }
 
     // Markers logic
@@ -105,8 +134,29 @@ export default function Map({ alertData, showMarkers, showHeatmap }: MapProps) {
         markersLayerRef.current?.addLayer(marker);
       });
     }
+  }
 
-  }, [alertData, showMarkers, showHeatmap])
+  const findNearestPoint = (latlng: L.LatLng, heatData: L.HeatLatLngTuple[]): L.HeatLatLngTuple | null => {
+    let nearestPoint = null;
+    let minDistance = Infinity;
+    for (const point of heatData) {
+      const distance = latlng.distanceTo(L.latLng(point[0], point[1]));
+      if (distance < minDistance) {
+        minDistance = distance;
+        nearestPoint = point;
+      }
+    }
+    return minDistance < 20000 ? nearestPoint : null; // 20km threshold
+  }
 
-  return <div id="map" style={{ height: 'calc(100vh - 200px)', width: '100%' }} />
+  return (
+    <div dir='rtl'>
+      <div className='z-0' id="map" style={{ height: 'calc(100vh - 200px)', width: '100%' }} />
+      {selectedLocation && (
+        <div className="absolute bottom-4 tight-4 bg-black p-2 rounded shadow text-white text-xxl">
+          {selectedLocation}
+        </div>
+      )}
+    </div>
+  )
 }
